@@ -6,7 +6,7 @@
 
 ## 설치
 
-[Releases](../../releases) 에서 `GifPet_Setup_v1.4.1.exe` 다운로드 후 실행
+[Releases](../../releases) 에서 `GifPet_v1.4.2.exe` 다운로드 후 실행 (단일 실행 파일, 설치 불필요)
 
 - Python 등 별도 설치 불필요
 - Windows 전용

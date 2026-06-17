@@ -118,6 +118,32 @@ def update_config(**kwargs):
 
 
 # ── 멀티 모니터 헬퍼 ─────────────────────────────────────────────────────────
+def _physical_to_logical(widget, x: int, y: int) -> tuple:
+    """pynput 물리 픽셀 좌표 (x, y)를 widget이 속한 모니터 기준 논리 좌표로 변환.
+    winfo_id() 실패·GetAncestor 실패·API 부재/실패 등 모든 예외 시 원본 (x, y) 반환.
+    변환 정확성 보장: 점(x, y)이 widget과 같은 모니터에 있을 때.
+    """
+    try:
+        hwnd = widget.winfo_id()
+        if not hwnd:
+            return x, y
+        # winfo_id()가 child HWND를 반환할 경우를 대비해 GA_ROOT(2)로 최상위 핸들 취득.
+        # 이미 최상위 HWND라면 GetAncestor는 자기 자신을 반환하므로 무해하다.
+        root_hwnd = ctypes.windll.user32.GetAncestor(hwnd, 2)
+        if not root_hwnd:
+            root_hwnd = hwnd
+
+        pt = ctypes.wintypes.POINT(x, y)
+        ok = ctypes.windll.user32.PhysicalToLogicalPointForPerMonitorDPI(
+            root_hwnd, ctypes.byref(pt)
+        )
+        if not ok:
+            return x, y
+        return pt.x, pt.y
+    except Exception:
+        return x, y
+
+
 def _monitor_work_area(x: int, y: int) -> tuple:
     """(x, y) 좌표가 속한 모니터의 작업 영역 (left, top, right, bottom) 반환."""
     class _RECT(ctypes.Structure):
@@ -193,16 +219,31 @@ class _CtxMenu(tk.Toplevel):
     def _on_global_click(self, x, y, button, pressed):
         if not pressed:
             return
-        # 메뉴 영역 안 클릭이면 tkinter에 맡기고 무시
+        if self._closed:
+            return
+        # 메뉴 영역 안 클릭이면 tkinter에 맡기고 무시.
+        # pynput은 물리 픽셀 좌표를 전달하고 tkinter winfo_*는 논리 좌표를 반환하므로
+        # 고DPI(125~150%) 환경에서 좌표계 불일치가 발생한다.
+        # 창별로 PhysicalToLogicalPointForPerMonitorDPI 변환 후 비교한다.
+        # (변환 실패 시 _physical_to_logical이 원본 물리 좌표를 반환 → 현재와 동일 동작)
         for win in self._top_menu._all():
             try:
-                if (win.winfo_rootx() <= x <= win.winfo_rootx() + win.winfo_width() and
-                        win.winfo_rooty() <= y <= win.winfo_rooty() + win.winfo_height()):
+                lx, ly = _physical_to_logical(win, x, y)
+                # winfo_* 값을 한 번씩 읽어 지역 변수에 저장: 두 호출 사이 창 이동 시 rx/ry 불일치를
+                # 최소화한다(완전한 원자성 보장은 아니나, 비교식에서 재호출보다 낫다).
+                rx = win.winfo_rootx()
+                ry = win.winfo_rooty()
+                rw = win.winfo_width()
+                rh = win.winfo_height()
+                if rx <= lx <= rx + rw and ry <= ly <= ry + rh:
                     return
             except Exception:
                 pass
-        # 메뉴 밖 클릭이면 닫기
-        self._root.after(0, self._top_menu._close)
+        # 메뉴 밖 클릭이면 닫기 (pynput 스레드 → 메인 루프 큐에 등록; after 호출 자체도 방어)
+        try:
+            self._root.after(0, self._top_menu._close)
+        except Exception:
+            pass
 
     # ── 위치 확정 ─────────────────────────────────────────────────────────────
     def _reposition(self):
@@ -289,7 +330,9 @@ class _CtxMenu(tk.Toplevel):
             except Exception: pass
         try: self._root.unbind('<Button-1>', self._bid)
         except Exception: pass
-        if self._on_close: self._on_close()
+        if self._on_close:
+            try: self._on_close()
+            except Exception: pass
         try: self.destroy()
         except Exception: pass
 
@@ -304,7 +347,8 @@ class _CtxMenu(tk.Toplevel):
         self._close()
 
     def _all(self):
-        return [self] + (self._sub._all() if self._sub else [])
+        sub = self._sub  # 단일 읽기: pynput 스레드 경합 시 _sub가 중간에 None으로 바뀌는 경우를 방지
+        return [self] + (sub._all() if sub else [])
 
 
 def create_tray_icon_image() -> Image.Image:

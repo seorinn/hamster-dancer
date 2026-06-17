@@ -3,3 +3,6 @@ __pycache__/
 dist/
 build/
 installer/
+_onefile_build/
+_onefile_dist/
+docs/team/
